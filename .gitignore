@@ -1,0 +1,10 @@
+# Generated run outputs -- keep the validated reference set, ignore fresh runs.
+results/*
+!results/reference/
+!results/reference/**
+results/discovery/
+*.pt
+*.log
+__pycache__/
+*.pyc
+.ipynb_checkpoints/

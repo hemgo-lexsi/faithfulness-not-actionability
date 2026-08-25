@@ -1,0 +1,44 @@
+# Reproduction environment for
+# "Faithfulness Is Not Actionability: Extrinsic Validation of Circuit Selectors
+# Under Structured Pruning"
+#
+# DO NOT hand-pin transformers / huggingface_hub / datasets / lm-eval here.
+# circuitkit's own pyproject.toml declares the compatible range
+# (huggingface-hub>=0.34,<1.0, transformers>=4.57,<5, transformer-lens>=2.18,<3)
+# and its `benchmarks` extra pulls a matching lm-eval straight from
+# EleutherAI's git HEAD. Pinning any one of these below that floor -- as an
+# earlier version of this file did -- produces a half-resolved environment:
+# `pip install <one-package>==<old-version>` only satisfies that package's
+# own tree, it does not re-resolve or downgrade whatever's already installed,
+# so you end up with (e.g.) a huggingface_hub old enough for lm-eval 0.4.4
+# sitting next to a transformers new enough to need huggingface_hub>=1.0 --
+# an ImportError, not a version mismatch you can see coming.
+#
+# Install everything circuitkit needs in ONE resolver call instead:
+#
+#   pip install -e ".[benchmarks]"
+#
+# from the circuitkit repo root. This is circuitkit's own documented
+# reproducible-install path (see pyproject.toml's "Platform notes"), and
+# it pulls torch, transformers, huggingface-hub, transformer-lens, datasets,
+# and lm-eval as one mutually-consistent set.
+#
+# The only things circuitkit's own extras do NOT cover:
+peft>=0.12                        # LoRA healing / selective fine-tuning (drivers/run_interventions.py)
+
+# numpy/scipy/pandas are already circuitkit base dependencies (unpinned by
+# design there) -- analysis/analyze.py has no numpy-2-incompatible code and
+# needs no separate pin; whatever circuitkit's resolver picks is fine, and it
+# runs standalone (no GPU, no torch) if you want it in a lighter env:
+#   pip install numpy scipy pandas
+
+# --- structural pruning: LLM-Pruner is NOT on PyPI, and not a circuitkit dep ---
+# git clone https://github.com/horseee/LLM-Pruner && export LLM_PRUNER_PATH=$PWD/LLM-Pruner
+# (it vendors its own torch_pruning; no separate install needed)
+
+# --- CUDA torch build ---
+# If nothing suitable is already installed, follow circuitkit's own guidance:
+# install your preferred torch build FIRST (e.g. from
+# https://download.pytorch.org/whl/cu126), THEN run the -e ".[benchmarks]"
+# command above so its resolver treats that torch as already satisfied
+# instead of trying to replace it.

@@ -1,0 +1,4 @@
+pair,high_patchf_selector,low_patchf_selector,low_patchf_harm,high_patchf_harm,random_harm
+1,cdt,taylor,-0.004,0.296,0.363
+2,magnitude,taylor,-0.015,0.377,0.337
+3,cdt,ibcircuit,0.021,0.357,0.290
