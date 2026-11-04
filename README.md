@@ -1,185 +1,197 @@
-# Faithfulness Is Not Actionability — reproduction package
+<!--
+TODO(release): three decisions are open before this repository goes public.
+1. drivers/lib.py scores patchF on the top-(1 - sparsity) keep set; the paper
+   scores the top-30% circuit. Change the default to match the paper.
+2. drivers/lib.py prunes with LLM-Pruner; the paper's grid zeroes heads and
+   MLP blocks in exported checkpoints. Add that path, or document the difference.
+3. The paper promises per-run score files and the authored SST-2 pairs; neither
+   ships here yet. Add them, or trim the paper's code sentence.
+Remove this comment once all three are settled.
+-->
 
-Code and data to reproduce every number, table, and figure in
-**"Faithfulness Is Not Actionability: Extrinsic Validation of Circuit
-Selectors Under Structured Pruning."**
+# Faithfulness Is Not Actionability: reproduction package
 
-The paper asks whether patch-faithfulness (**patchF**) of a discovered circuit
-predicts how much accuracy survives when its low-scored components are actually
-removed (**accRet**). Across 10 selectors, two models, and three tasks (five
-model·task cells) the Spearman correlation between the two flips sign by
-task — significantly negative on Llama·BoolQ, significantly positive on
-Llama·SST-2, null on the other three cells — so patchF is not a transferable
-keep/discard ranking.
+Code and data for **"Faithfulness Is Not Actionability: Extrinsic Validation
+of Circuit Selectors Under Structured Pruning"** (Hem Gosalia, Pratinav Seth,
+Aditya Kasliwal, and Vinay Kumar Sankarapu; Lexsi Labs), NeurIPS 2026 Workshop
+on XAI4Science.
 
-Everything here runs on the **public** `circuitkit` package (PyPI) — no
-internal code required.
+The paper asks whether the patch faithfulness (**patchF**) of a discovered
+circuit predicts how much accuracy survives when the components a selector
+ranks lowest are actually removed (**accRet**). Across 10 selectors, two
+models, and three tasks (five model·task cells), the Spearman correlation
+between the two changes sign with the task. It is significantly negative on
+Llama·BoolQ, significantly positive on Llama·SST-2, and null on the other
+three cells, so patchF is not a transferable keep/discard ranking.
+
+Everything here runs on the public
+[CircuitKIT](https://github.com/Lexsi-Labs/circuitkit) library
+(`pip install circuitkit`); no internal code is required.
 
 ---
 
-## TL;DR — reproduce the paper's statistics in 30 seconds, no GPU
+## Reproduce the paper's statistics in 30 seconds, no GPU
 
 ```bash
 pip install numpy scipy pandas
 python analysis/analyze.py --results-dir results/reference --self-test
 ```
 
-This ingests the shipped per-selector seed-42 values (`results/reference/`) and
-recomputes **every** statistic in the paper — the five per-cell Spearman ρ,
-leave-one-family-out, the coherence-confound partial correlation, the cross-swap
-asymmetry, multiplicity, pooled correlation — asserting each against the
-published value. All checks should print `PASS`.
+This reads the shipped per-selector seed-42 values (`results/reference/`) and
+recomputes every statistic in the paper: the five per-cell Spearman ρ, the
+leave-one-family-out check, the coherence-confound partial correlation, the
+cross-swap asymmetry, the multiplicity correction, and the pooled correlation.
+Each is asserted against the published value, and every check should print
+`PASS`.
 
-The GPU experiments below regenerate those `results/reference/` values from
+The GPU experiments below regenerate the `results/reference/` values from
 scratch.
 
 ---
 
 ## What reproduces what
 
+Table and figure numbers follow the camera-ready version of the paper.
+
 | Paper item | Command |
 |---|---|
-| Table 1 (5 cells) | `drivers/run_grid.py --seeds 42` |
-| Tables 3, 5, 6 — per-cell selector detail | same run as above |
-| Table 2 — selector list / scoring rules (static, not a rerun) | `configs/grid.py`: `ALL_SELECTORS`, `SELECTOR_FAMILY` |
-| Table 4 — leave-one-family-out | computed by `analysis/analyze.py` (no rerun) |
-| Coherence confound (partial ρ \| log PPL) | computed by `analysis/analyze.py` |
-| Appendix C — 50% budget | `drivers/run_grid.py --cells llama:boolq --seeds 42 --sparsities 0.50` |
-| §4.3, Fig. 4, Table 9 — cross-swap | `drivers/run_crossswap.py --seeds 42` |
-| §4.2, Table 8 — quantization, LoRA healing | `drivers/run_interventions.py --which {quantization,lora-heal}` |
-| Multi-seed check on the two significant cells — **not yet run**, see "The seed question" below | `drivers/run_grid.py --cells llama:boolq llama:sst2 --seeds 42 123 456` |
-| All tables/figures at once | `bash run_all.sh` |
+| Table 1 (five cells) | `drivers/run_grid.py --seeds 42` |
+| Tables 3, 5, and 6 (per-cell selector detail) | same run as above |
+| Table 2 (selector list and scoring rules; static) | `configs/grid.py`: `ALL_SELECTORS`, `SELECTOR_FAMILY` |
+| Table 4 (leave-one-family-out) | `analysis/analyze.py` (no rerun) |
+| Coherence confound (partial ρ given log PPL) | `analysis/analyze.py` (no rerun) |
+| Appendix C, Table 7 (50% budget) | `drivers/run_grid.py --cells llama:boolq --seeds 42 --sparsities 0.50` |
+| §4.3, Figure 4, Table 9 (cross-swap) | `drivers/run_crossswap.py --seeds 42` |
+| §4.2, Tables 8 and 17 (LoRA healing, quantization) | `drivers/run_interventions.py --which {quantization,lora-heal}` |
+| Multi-seed replication of the two significant cells (future work; see "Seeds" below) | `drivers/run_grid.py --cells llama:boolq llama:sst2 --seeds 42 123 456` |
+| Everything at once | `bash run_all.sh` |
 
-Every driver appends to `results/master_seed{SEED}.csv`; `analysis/analyze.py`
-turns those into the paper's tables. Nothing is hard-coded — the analysis reads
-only the CSVs.
+Every driver appends to `results/master_seed{SEED}.csv`, and
+`analysis/analyze.py` turns those files into the paper's tables. Nothing is
+hard-coded: the analysis reads only the CSVs.
 
 ---
 
 ## Install (for the GPU experiments)
 
-Install the library under test (public, source-available) in one call and
-let its own dependency graph resolve — don't hand-pin
-`transformers`/`huggingface_hub`/`datasets`/`lm-eval` yourself. circuitkit's
-`benchmarks` extra pulls a `lm-eval` build tested against the same
-`huggingface-hub`/`transformers` range circuitkit itself requires; pinning
-any one of those packages independently (as an earlier version of this
-package's `requirements.txt` did) desyncs the graph and produces exactly the
-kind of `ImportError`/`HfUriError` that's hard to diagnose from the outside.
+Install the library in one call and let its own dependency graph resolve.
+Do not pin `transformers`, `huggingface_hub`, `datasets`, or `lm-eval` by
+hand. CircuitKIT's `benchmarks` extra pulls an `lm-eval` build tested against
+the `huggingface-hub` and `transformers` range CircuitKIT itself requires, and
+pinning any one of them separately (as an earlier `requirements.txt` here did)
+desyncs the graph. The result is an `ImportError` or `HfUriError` that is hard
+to diagnose.
 
 ```bash
-# 1. The library under test — one consolidated install from PyPI.
-#    (A100/H100/H200 + CUDA 12.x assumed; swap gpu-cu126 for your build.)
+# 1. The library, from PyPI (A100/H100/H200 with CUDA 12.x assumed;
+#    swap gpu-cu126 for your build).
 pip install "circuitkit[benchmarks,gpu-cu126]" --extra-index-url https://download.pytorch.org/whl/cu126
 
-# 2. This reproduction package's one extra dependency (not a circuitkit dep):
+# 2. This package's one extra dependency.
 pip install "peft>=0.12"
 
-# 3. Structural pruner (public; not on PyPI)
+# 3. The structural pruner (public, not on PyPI).
 git clone https://github.com/horseee/LLM-Pruner
 export LLM_PRUNER_PATH=$PWD/LLM-Pruner
 
-# 4. Gated models: accept the licenses on the Hub, then
+# 4. Gated models: accept the licenses on the Hub, then log in.
 huggingface-cli login
 #   meta-llama/Llama-3.2-3B-Instruct   (Llama 3.2 Community License)
 #   google/gemma-3-4b-it               (Gemma Terms of Use)
 ```
 
-If circuitkit's own hardcoded LLM-Pruner path expectation trips you up (it
-looks for `LLM-Pruner/` as a sibling of `src/` inside its own repo root, not
-wherever `LLM_PRUNER_PATH` points), symlink it there:
-`ln -s $LLM_PRUNER_PATH ./LLM-Pruner` from the circuitkit repo root.
+CircuitKIT expects `LLM-Pruner/` next to `src/` in its own repository root,
+not wherever `LLM_PRUNER_PATH` points. If that check fails, symlink it from
+the CircuitKIT root: `ln -s $LLM_PRUNER_PATH ./LLM-Pruner`.
 
-On a shared/pre-provisioned box where other tooling already needs a newer
-`transformers`/`huggingface_hub` than circuitkit's range, do the install
-above inside a venv created with `python -m venv --system-site-packages`
-(reuses the box's existing CUDA-matched torch, shadows only what circuitkit
-needs) rather than pinning individual packages into the system environment.
+On a shared machine where other tools already need a newer `transformers` or
+`huggingface_hub` than CircuitKIT allows, install inside a venv created with
+`python -m venv --system-site-packages`. It reuses the machine's CUDA-matched
+torch and shadows only what CircuitKIT needs, so you never pin packages into
+the system environment.
 
 ## Reproduce
 
 ```bash
 export LLM_PRUNER_PATH=/path/to/LLM-Pruner
-bash run_all.sh                              # full grid, ~1–2 GPU-days
+bash run_all.sh                              # full grid, about 1 to 2 GPU-days
 # or one slice:
 python drivers/run_grid.py --cells llama:boolq --selectors eap-ig --seeds 42
 python analysis/analyze.py --results-dir results
 ```
 
-### The seed question (important)
+### Seeds
 
-Every published seed-42 number in the paper rests on a single draw, with one
-exception: Gemma·BoolQ, which is also checked at seed 123 and reproduces the
-same ordering (folded into its per-cell table as a parenthetical). Multi-seed
-replication of the two *significant* cells (Llama·BoolQ, Llama·SST-2) has not
-been run yet — the paper states this plainly as the first item of future work.
+Every grid number in the paper comes from a single seed-42 draw. Gemma·BoolQ
+was also run at seed 123 and keeps the same qualitative accRet ordering,
+though not the same patchF values. For the camera-ready we rediscovered the
+Llama·BoolQ selectors at seeds 42 and 43 with a separate audit harness. The
+correlation stayed negative at both seeds (ρ = −0.61, p = 0.068; ρ = −0.91,
+p = 0.0006; Appendix O). Rediscovery does not return the grid's exact sets
+for five selectors, so this checks the protocol rather than the grid itself.
 
-The internal harness and `configs/grid.py`'s `SEEDS` default to
-**{42, 123, 456}** for exactly this purpose:
-`drivers/run_grid.py --cells llama:boolq llama:sst2 --seeds 42 123 456` fills
-that gap. The seed propagates into the 128-example discovery draw
-(`discover_circuit(cfg["discovery"]["seed"]`) and `data_params["seed"]`), the
-Taylor/Wanda calibration split, and the random-control graph, so each seed is a
-genuinely independent draw — which is what the replication is meant to stress.
+Full multi-seed replication of the two significant cells (Llama·BoolQ and
+Llama·SST-2) remains future work. `configs/grid.py` sets `SEEDS` to
+**{42, 123, 456}** for that purpose, and
+`drivers/run_grid.py --cells llama:boolq llama:sst2 --seeds 42 123 456` runs
+it. The seed reaches the 128-example discovery draw
+(`discover_circuit(cfg["discovery"]["seed"])` and `data_params["seed"]`), the
+Taylor and Wanda calibration split, and the random-control graph, so each seed
+is an independent draw.
 
 ---
 
 ## Compute budget (single A100 80 GB)
 
-| Stage | Runs | ≈ time |
+| Stage | Runs | Approximate time |
 |---|---|---|
-| Discovery (5 circuit selectors × 5 cells, seed 42) | 25 | 3–5 h (IBCircuit/EAP-IG dominate) |
-| Prune + accRet + PPL (10 selectors × 5 cells) | 50 | 6–9 h |
-| **Multi-seed BoolQ+SST-2 × seeds 123, 456** | 40 | **~15–25 GPU-h** |
-| Cross-swap (3 pairs × 3 conditions) | 9 | 1–2 h |
-| Quantization + LoRA healing | — | 2–4 h |
+| Discovery (5 circuit selectors × 5 cells, seed 42) | 25 | 3 to 5 h (IBCircuit and EAP-IG dominate) |
+| Prune, accRet, and PPL (10 selectors × 5 cells) | 50 | 6 to 9 h |
+| **Multi-seed BoolQ and SST-2 at seeds 123 and 456** | 40 | **about 15 to 25 GPU-h** |
+| Cross-swap (3 pairs × 3 conditions) | 9 | 1 to 2 h |
+| Quantization and LoRA healing | n/a | 2 to 4 h |
 
 Peak memory stays flat because every cell reloads a fresh model and frees it
-(`common.free`). If you OOM: lower `configs.grid.BATCH_SIZE`, keep IBCircuit at
-`IB_BATCH_SIZE=1`, or `export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`.
-Discovery and prune/eval checkpoint scores to disk between phases, so you can
-shard them into separate processes.
+(`common.free`). If you run out of memory, lower `configs.grid.BATCH_SIZE`,
+keep IBCircuit at `IB_BATCH_SIZE=1`, or set
+`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`. Discovery and
+prune/evaluate save scores to disk between phases, so you can run them as
+separate processes.
 
 ---
 
 ## Layout
 
 ```
-configs/grid.py         all experiment knobs (models, tasks, selectors, seeds, budgets)
+configs/grid.py         all experiment settings (models, tasks, selectors, seeds, budgets)
 common.py               seeds, OOM-safe model loading, WikiText PPL, master-CSV writer
 drivers/
-  lib.py                scoring · keep-set faithfulness · GQA-aware prune · accRet
-  run_grid.py           patchF↔accRet grid  (Tables 1, 3, 5, 6)
-  run_crossswap.py      component-level cross-swap causal test  (§4.3)
-  run_interventions.py  quantization + LoRA healing  (§4.2)
-analysis/analyze.py     every statistic; --self-test asserts published values
-results/reference/      the paper's seed-42 values (so analysis runs GPU-free)
+  lib.py                scoring, keep-set faithfulness, GQA-aware pruning, accRet
+  run_grid.py           patchF vs. accRet grid (Tables 1, 3, 5, and 6)
+  run_crossswap.py      component-level cross-swap test (§4.3)
+  run_interventions.py  quantization and LoRA healing (§4.2)
+analysis/analyze.py     every statistic; --self-test asserts the published values
+results/reference/      the paper's seed-42 values, so the analysis runs without a GPU
 run_all.sh              one-shot reproduction
 ```
 
 ---
 
-## Sharing / anonymity (double-blind)
-
-This package is built to be reviewer-runnable **without** deanonymizing the
-authors: it depends only on the public `circuitkit` package as a third-party
-dependency and contains no author names or internal URLs.
-
-For a double-blind submission, mirror it anonymously rather than linking a
-named GitHub repo — [**anonymous.4open.science**](https://anonymous.4open.science)
-serves an anonymized copy of a GitHub repo with the owner and any identifying
-strings replaced. Push this tree to a private repo, register it there, fill in
-every identifying string, and verify the resulting mirror in a
-private/incognito window before citing it anywhere.
-
 ## License
 
-The reproduction scripts here are released for review and replication. The
-`circuitkit` library is under its own source-available license (LSAL-1.1);
-LLM-Pruner and lm-evaluation-harness under their respective (MIT / Apache-2.0)
-licenses. Model weights are governed by the Llama 3.2 Community License and the
-Gemma Terms of Use.
+The code in this repository is released under the MIT License (see
+`LICENSE`). The CircuitKIT library has its own source-available license
+(LSAL-1.1), and LLM-Pruner and lm-evaluation-harness are under their own
+licenses (MIT and Apache-2.0). Model weights are governed by the Llama 3.2
+Community License and the Gemma Terms of Use.
 
 ## Citation
 
-See the paper. (Author block omitted here for double-blind.)
+```bibtex
+@inproceedings{gosalia2026faithfulness,
+  title     = {Faithfulness Is Not Actionability: Extrinsic Validation of Circuit Selectors Under Structured Pruning},
+  author    = {Gosalia, Hem and Seth, Pratinav and Kasliwal, Aditya and Sankarapu, Vinay Kumar},
+  booktitle = {NeurIPS 2026 Workshop on XAI4Science: Knowledge Discovery and Trust through Interpretable Foundation Models},
+  year      = {2026}
+}
+```
