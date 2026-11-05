@@ -3,8 +3,8 @@
 run_grid.py -- end-to-end patchF vs accRet grid (paper Tables 1, 3, 5, 6).
 
 For every (model, task, selector, seed, sparsity) it produces one master-CSV
-row: patchF, ablF (keep-set faithfulness) and accRet, ppl (post-prune). Base
-accuracy is measured once per (model, task, seed) and cached.
+row: patchF, ablF (faithfulness of the top-30% circuit) and accRet, ppl
+(post-prune). Base accuracy is measured once per (model, task, seed) and cached.
 
 Examples
 --------
@@ -75,10 +75,11 @@ def run_cell(spec: CFG.CellSpec, out_dir: str, disco_dir: str, base_cache: dict)
     importance, cfg, artifact, scores_path = lib.scores_for_selector(
         spec, model, tok, disco_dir)
 
-    # keep-set faithfulness (patchF/ablF). NaN only for magnitude/taylor/random,
-    # whose patchF ships in results/reference (see scores_for_selector note).
+    # faithfulness of the top-30% circuit (patchF/ablF). NaN only for
+    # magnitude/taylor/random, whose patchF ships in results/reference
+    # (see scores_for_selector note).
     if artifact or scores_path:
-        faith = lib.keepset_faithfulness(spec, cfg, artifact=artifact,
+        faith = lib.circuit_faithfulness(spec, cfg, artifact=artifact,
                                          scores_path=scores_path)
     else:
         faith = {"patchF": float("nan"), "ablF": float("nan")}

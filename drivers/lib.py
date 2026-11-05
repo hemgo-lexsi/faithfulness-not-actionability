@@ -7,10 +7,12 @@ One cell = one (model, task, selector, seed, sparsity). For every selector we:
        - circuit selectors (eap/eap-ig/eap-gp/ibcircuit/cdt): discover_circuit
        - baselines (magnitude/taylor/wanda/multi_granular/random): importance
          estimators evaluated on the same clean data
-  2. Take the top-(1 - sparsity) fraction as the KEEP set = "the circuit".
-  3. patchF / ablF  = faithfulness of that keep set (run_full_faithfulness).
-  4. accRet         = task accuracy after ZEROING the discard set (LLM-Pruner
-                      structural prune) / base accuracy, via lm-eval-harness.
+  2. Take the top-30% of components as "the circuit"
+     (CFG.PATCHF_CIRCUIT_FRAC), whatever the pruning budget.
+  3. patchF / ablF  = faithfulness of that circuit (run_full_faithfulness).
+  4. accRet         = task accuracy after ZEROING the bottom-`sparsity`
+                      discard set (LLM-Pruner structural prune) / base
+                      accuracy, via lm-eval-harness.
   5. ppl            = WikiText-2 perplexity of the pruned model (confound check).
 
 This mirrors the internal harness that produced the paper's seed-42 numbers;
@@ -80,10 +82,16 @@ def build_config(spec: CFG.CellSpec, out_dir: str) -> tuple[dict, str]:
     cfg = {
         "model": {"name": spec.model_id, "precision": CFG.PRECISION},
         "discovery": discovery,
-        "pruning": {"target_sparsity": spec.sparsity, "scope": CFG.SCOPE},
+        # This block sizes only the circuit CircuitKIT discovers and scores for
+        # patchF: the top PATCHF_CIRCUIT_FRAC of components at every budget.
+        # IBCircuit fixes that size in its discovery artifact, so it must be
+        # set here, not just at evaluation. The accRet prune reads
+        # spec.sparsity separately (prune_and_accret).
+        "pruning": {"target_sparsity": 1.0 - CFG.PATCHF_CIRCUIT_FRAC,
+                    "scope": CFG.SCOPE},
         "output_path": artifact,
         # We only read report.patching_score / .ablation_score (see
-        # keepset_faithfulness). Without this, evaluate_circuit()'s
+        # circuit_faithfulness). Without this, evaluate_circuit()'s
         # eval_cfg.get("pillars") comes back None, which it treats as "run
         # all six" -- stability alone re-runs discovery n_stability_runs=5
         # times internally, plus robustness builds extra corruption
@@ -208,18 +216,20 @@ def _calibrate_taylor_grads(spec, model, tokenizer, device: str = "cuda"):
 
 
 # ---------------------------------------------------------------------------
-# 2-3. Keep-set faithfulness (patchF / ablF)
+# 2-3. Circuit faithfulness (patchF / ablF)
 # ---------------------------------------------------------------------------
-def keepset_faithfulness(spec: CFG.CellSpec, cfg: dict, artifact: str = None,
+def circuit_faithfulness(spec: CFG.CellSpec, cfg: dict, artifact: str = None,
                          scores_path: str = None) -> dict:
-    """patchF + ablF of the top-(1-sparsity) keep set, via the verified public
-    entry point circuitkit.api.evaluate_circuit -> FaithfulnessReport.
+    """patchF + ablF of the top-30% circuit (CFG.PATCHF_CIRCUIT_FRAC, set in
+    build_config), via the verified public entry point
+    circuitkit.api.evaluate_circuit -> FaithfulnessReport. The circuit does
+    not depend on the pruning budget, matching the paper's protocol.
 
       report.patching_score  = Pillar 1, causal patching  = patchF
       report.ablation_score  = Pillar 2, ablation          = ablF
 
     Circuit selectors pass the discovery artifact; baseline selectors pass a
-    saved per-component scores file (evaluate_circuit rebuilds the keep-set
+    saved per-component scores file (evaluate_circuit rebuilds the circuit
     graph from either). Restrict to the two cheap pillars for speed.
     """
     from circuitkit.api import evaluate_circuit
@@ -336,7 +346,7 @@ def scores_for_selector(spec, model, tokenizer, disco_dir):
         (importance, cfg, artifact, scores_path)
 
     where `importance` drives the structural prune (accRet, every selector),
-    and (`cfg`, `artifact`|`scores_path`) drive keepset_faithfulness (patchF).
+    and (`cfg`, `artifact`|`scores_path`) drive circuit_faithfulness (patchF).
 
     * circuit selectors (eap/eap-ig/eap-gp/ibcircuit/cdt, +obs)
           -> exact accRet AND exact patchF (discovery artifact + sidecar).

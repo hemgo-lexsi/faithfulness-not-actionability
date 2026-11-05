@@ -55,6 +55,10 @@ Table and figure numbers follow the camera-ready version of the paper.
 | Multi-seed replication of the two significant cells (future work; see "Seeds" below) | `drivers/run_grid.py --cells llama:boolq llama:sst2 --seeds 42 123 456` |
 | Everything at once | `bash run_all.sh` |
 
+patchF always scores the top-30% circuit (`configs/grid.py`:
+`PATCHF_CIRCUIT_FRAC`), whatever the pruning budget, as in the paper; accRet
+prunes the bottom `--sparsities` share of components.
+
 Every driver appends to `results/master_seed{SEED}.csv`, and
 `analysis/analyze.py` turns those files into the paper's tables. Nothing is
 hard-coded: the analysis reads only the CSVs.
@@ -155,7 +159,7 @@ separate processes.
 configs/grid.py         all experiment settings (models, tasks, selectors, seeds, budgets)
 common.py               seeds, OOM-safe model loading, WikiText PPL, master-CSV writer
 drivers/
-  lib.py                scoring, keep-set faithfulness, GQA-aware pruning, accRet
+  lib.py                scoring, top-30% circuit faithfulness, GQA-aware pruning, accRet
   run_grid.py           patchF vs. accRet grid (Tables 1, 3, 5, and 6)
   run_crossswap.py      component-level cross-swap test (§4.3)
   run_interventions.py  quantization and LoRA healing (§4.2)

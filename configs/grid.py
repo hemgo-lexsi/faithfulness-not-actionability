@@ -82,6 +82,9 @@ SEEDS: tuple[int, ...] = (42, 123, 456)
 # ---------------------------------------------------------------------------
 HEADLINE_SPARSITY = 0.30
 SPARSITY_SWEEP: tuple[float, ...] = (0.20, 0.30, 0.40, 0.50)  # robustness (App. B/C)
+# patchF scores the top-30% circuit at every pruning budget (paper Section 3
+# and Appendix C), not the top-(1 - sparsity) set the pruner keeps.
+PATCHF_CIRCUIT_FRAC = 0.30
 SCOPE = "both"                # attention heads + MLP channels
 HEAD_AGGREGATION = "mean"     # Q-heads -> KV-heads for GQA
 
