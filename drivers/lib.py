@@ -118,6 +118,7 @@ def discover_scores(spec: CFG.CellSpec, out_dir: str) -> str:
     sidecar = artifact.replace(".pt", "_scores.pt")
     if os.path.exists(sidecar):
         return sidecar
+    task_spec(spec.task)          # registers the SST-2 contrastive task if needed
     common.set_seed(spec.seed)
     discover_circuit(cfg)
     # discover_circuit() loads its own HookedTransformer internally (on top
@@ -258,22 +259,25 @@ def circuit_faithfulness(spec: CFG.CellSpec, cfg: dict, artifact: str = None,
 # 4a. Zeroing prune + accRet (default, --pruner zero): the paper's protocol
 # ---------------------------------------------------------------------------
 def task_spec(name: str):
-    """The registered CircuitKIT task, with a clear error for tasks the public
-    package does not ship (the paper's authored SST-2 contrastive pairs)."""
+    """The registered CircuitKIT task. "sst2" is the paper's authored,
+    label-flipping contrastive sentiment task (drivers/sst2_task.py, from the
+    grid's code); it is registered here on first use, since public CircuitKIT
+    ships only a generic GLUE task."""
     from circuitkit.tasks.bootstrap import _bootstrap_builtin_tasks
     from circuitkit.tasks.registry import get_task
+    if name == "sst2":
+        import importlib.util
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sst2_task.py")
+        mod_spec = importlib.util.spec_from_file_location("sst2_task", path)
+        module = importlib.util.module_from_spec(mod_spec)
+        mod_spec.loader.exec_module(module)
+        module.register()                  # idempotent; bootstraps builtins too
+        return get_task(name)
     try:
         return get_task(name)
     except Exception:             # the registry starts empty
         _bootstrap_builtin_tasks()
-    try:
         return get_task(name)
-    except Exception as e:
-        raise NotImplementedError(
-            f"task {name!r} is not registered in the installed circuitkit. The "
-            "Llama-SST-2 cell uses the paper's authored label-flipping "
-            "contrastive pairs, whose task module is not in public CircuitKIT "
-            "yet (see README, Protocol).") from e
 
 
 def node_scores(spec: CFG.CellSpec):
@@ -364,13 +368,20 @@ def node_patchf(spec: CFG.CellSpec, tl_model, scores: dict) -> float:
     task = task_spec(spec.task)
 
     device = next(tl_model.parameters()).device
-    dataloader = task.build_dataloader(tl_model, {
+    eval_seed = spec.seed + CFG.PATCHF_EVAL_SEED_OFFSET
+    data_cfg = {
         "algorithm": "eap", "task": spec.task, "level": "node",
         "batch_size": CFG.PATCHF_BATCH_SIZE, "model_name": spec.model_id,
-        "data_params": {"num_examples": CFG.PATCHF_EXAMPLES,
-                        "seed": spec.seed + CFG.PATCHF_EVAL_SEED_OFFSET,
+        "data_params": {"num_examples": CFG.PATCHF_EXAMPLES, "seed": eval_seed,
                         "data_partition": "eval"},
-    }, device)
+    }
+    if spec.task == "sst2":
+        # The SST-2 task reads its pair count and seed from the top level, as
+        # the grid's faithfulness pass set them: a held-out set of authored
+        # pairs, drawn with the eval-shifted seed.
+        data_cfg.update({"seed": eval_seed, "eval_num_examples": CFG.PATCHF_EXAMPLES,
+                         "glue_task": "sst2"})
+    dataloader = task.build_dataloader(tl_model, data_cfg, device)
     task_metric = task.metric_fn()
 
     def y(logits, clean_logits, input_lengths, labels):

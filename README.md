@@ -80,12 +80,20 @@ Table and figure numbers follow the camera-ready version of the paper.
 - The OBS row (Llama·BoolQ only) and the quantization and LoRA-healing runs
   (`drivers/run_interventions.py`, which call CircuitKIT's own example
   scripts) use LLM-Pruner.
-- **Llama·SST-2** uses authored, label-flipping contrastive pairs. Their task
-  module is not in public CircuitKIT yet, so the SST-2 cells stop with a clear
-  error before loading a model. The other four cells run as described.
+- **Llama·SST-2** discovers and scores patchF on authored, label-flipping
+  contrastive pairs (one sentiment adjective swapped, token-aligned). The task
+  is `drivers/sst2_task.py`, copied from the paper's grid code and registered
+  automatically; accRet is lm-eval on the real SST-2 validation split. To check
+  the pairs on your tokenizer first:
+  `python drivers/sst2_task.py --model meta-llama/Llama-3.2-3B-Instruct --self-check`.
 - Rediscovering the selectors does not return the grid's exact discard sets
   for five of the ten selectors (Appendix O), so fresh runs reproduce the
   protocol and the qualitative pattern, not every digit of Table 1.
+- **Checked on a GPU** (Llama·BoolQ, Magnitude, seed 42; RTX PRO 6000, about
+  12 minutes): the default path scores 700 components, discards 210, and its
+  discard set is identical to the grid's evaluated checkpoint (Jaccard 1.0).
+  Its patchF is 0.844, against 0.864 in the paper and 0.844 in the
+  camera-ready audit.
 
 Every driver appends to `results/master_seed{SEED}.csv`, and
 `analysis/analyze.py` turns those files into the paper's tables. Nothing is
@@ -191,6 +199,7 @@ configs/grid.py         all experiment settings (models, tasks, selectors, seeds
 common.py               seeds, OOM-safe model loading, WikiText PPL, master-CSV writer
 drivers/
   lib.py                scoring, top-30% circuit faithfulness, zeroing and LLM-Pruner paths, accRet
+  sst2_task.py          the authored SST-2 contrastive-pair task (from the grid's code)
   run_grid.py           patchF vs. accRet grid (Tables 1, 3, 5, and 6)
   run_crossswap.py      component-level cross-swap test (§4.3)
   run_interventions.py  quantization and LoRA healing (§4.2)
