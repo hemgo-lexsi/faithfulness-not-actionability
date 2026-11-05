@@ -1,29 +1,33 @@
 """
-Core experiment primitives, built on the PUBLIC CircuitKit API + LLM-Pruner.
+Core experiment primitives, built on the PUBLIC CircuitKit API.
 
 One cell = one (model, task, selector, seed, sparsity). For every selector we:
 
-  1. SCORE every attention head + MLP channel
+  1. SCORE the model's components
        - circuit selectors (eap/eap-ig/eap-gp/ibcircuit/cdt): discover_circuit
        - baselines (magnitude/taylor/wanda/multi_granular/random): importance
          estimators evaluated on the same clean data
   2. Take the top-30% of components as "the circuit"
      (CFG.PATCHF_CIRCUIT_FRAC), whatever the pruning budget.
   3. patchF / ablF  = faithfulness of that circuit (run_full_faithfulness).
-  4. accRet         = task accuracy after ZEROING the bottom-`sparsity`
-                      discard set (LLM-Pruner structural prune) / base
-                      accuracy, via lm-eval-harness.
+  4. accRet         = lm-eval accuracy after removing the discard set / base
+                      accuracy. Two pruners (CFG.PRUNERS):
+       - "zero" (default, the paper's protocol): node-level scores from
+         circuitkit.selection; zero the bottom round(N * sparsity) heads and
+         MLP blocks, ranked on one global list, in an exported checkpoint.
+       - "llm-pruner": LLM-Pruner removes `sparsity` of every layer, in whole
+         KV-head groups and MLP channels. Not the paper's headline protocol.
   5. ppl            = WikiText-2 perplexity of the pruned model (confound check).
 
-This mirrors the internal harness that produced the paper's seed-42 numbers;
-it is wired to the public package so reviewers need only:
+It is wired to the public package so reviewers need only:
 
     pip install circuitkit            # public PyPI package
     pip install lm-eval               # EleutherAI/lm-evaluation-harness
-    git clone https://github.com/horseee/LLM-Pruner   # structural pruner
+    git clone https://github.com/horseee/LLM-Pruner   # only for --pruner llm-pruner
 
-and set LLM_PRUNER_PATH (see README). Functions here raise informative errors
-if an optional dependency is missing rather than failing cryptically.
+and set LLM_PRUNER_PATH (see README) for the LLM-Pruner path. Functions here
+raise informative errors if an optional dependency is missing rather than
+failing cryptically.
 
 NOTE ON EXECUTION: these routines require a GPU + the 3-4B models and cannot be
 run on a CPU box. The statistics layer (analysis/analyze.py) is fully validated
@@ -247,10 +251,97 @@ def circuit_faithfulness(spec: CFG.CellSpec, cfg: dict, artifact: str = None,
 
 
 # ---------------------------------------------------------------------------
-# 4. Structural prune + accRet
+# 4a. Zeroing prune + accRet (default, --pruner zero): the paper's protocol
+# ---------------------------------------------------------------------------
+def node_scores(spec: CFG.CellSpec):
+    """Signed score for every attention head ("A{l}.{h}") and MLP block
+    ("MLP {l}"), computed as the paper's grid did:
+    circuitkit.selection.get_selector(selector) on a HookedTransformer with
+    TransformerLens's default weight processing and the grid's discovery
+    settings (CFG.SELECTOR_CFG).
+
+    Returns (scores, tl_model). The caller passes tl_model to export_zeroed()
+    and then drops its reference.
+    """
+    if spec.selector == "obs":
+        raise NotImplementedError(
+            "obs has no node-level selector in circuitkit.selection; "
+            "run it with --pruner llm-pruner")
+    import circuitkit as ck
+    from circuitkit.selection import get_selector   # registers all ten selectors
+    common.set_seed(spec.seed)
+    model = ck.load_model(spec.model_id, dtype=CFG.PRECISION, device="cuda",
+                          **CFG.TL_WEIGHT_PROCESSING)
+    model.cfg.model_name = spec.model_id   # the task-data cache keys on the full id
+    model.eval()
+    cfg = dict(CFG.SELECTOR_CFG, seed=spec.seed, model_name=spec.model_id)
+    scores = get_selector(spec.selector)(model, spec.task, cfg)
+    return {k: float(v) for k, v in scores.items()}, model
+
+
+def discard_set(scores: dict, sparsity: float) -> list:
+    """The grid's global rule: the bottom round(N * sparsity) components by
+    signed score, attention heads and MLP blocks ranked on one list."""
+    ordered = sorted(scores.items(), key=lambda kv: kv[1])
+    n = max(1, int(round(len(ordered) * sparsity)))
+    return [name for name, _ in ordered[:n]]
+
+
+def export_zeroed(spec: CFG.CellSpec, tl_model, discard, work_dir: str,
+                  name: str = None) -> str:
+    """Write an HF checkpoint with `discard` zeroed and return its path.
+
+    circuitkit's save_pruned_checkpoint zeroes each pruned head's q_proj rows
+    and o_proj columns (shared K/V stay intact under GQA) and each pruned MLP
+    block's gate/up/down weights, starting from the original HF weights. These
+    are the checkpoints behind the paper's accRet (Appendix O).
+    """
+    from circuitkit.evaluation.hf_checkpoint import save_pruned_checkpoint
+    path = os.path.join(work_dir, name or (spec.tag() + "_zeroed"))
+    save_pruned_checkpoint(tl_model, list(discard), path, overwrite=True,
+                           weights="original")
+    return path
+
+
+def eval_checkpoint(spec: CFG.CellSpec, path: str, keep: bool = False,
+                    with_ppl: bool = True) -> dict:
+    """lm-eval accuracy (and WikiText-2 PPL) of an exported checkpoint, scored
+    exactly like the base model. Deletes the checkpoint unless `keep`."""
+    import shutil
+    model, tok = common.load_hf_model(path, CFG.PRECISION, tokenizer_id=spec.model_id)
+    try:
+        acc = eval_task_accuracy(model, tok, spec.task)
+        ppl = (common.wikitext_perplexity(model, tok, CFG.PPL_DATASET)
+               if with_ppl else float("nan"))
+    finally:
+        del model, tok
+        common.free()
+        if not keep:
+            shutil.rmtree(path, ignore_errors=True)
+    return {"acc_pruned": acc, "ppl": ppl}
+
+
+def faithfulness_handle(spec: CFG.CellSpec, disco_dir: str):
+    """(cfg, artifact) for circuit_faithfulness without building an LLM-Pruner
+    importance. artifact is None for magnitude/taylor/wanda/multi_granular/
+    random, whose patchF ships in results/reference (see scores_for_selector).
+    """
+    cfg, artifact = build_config(spec, disco_dir)
+    if spec.selector in CFG.CIRCUIT_SELECTORS or spec.selector == "obs":
+        discover_scores(spec, disco_dir)
+        return cfg, artifact
+    return cfg, None
+
+
+# ---------------------------------------------------------------------------
+# 4b. Structural prune + accRet (--pruner llm-pruner): not the paper's protocol
 # ---------------------------------------------------------------------------
 def prune_and_accret(spec: CFG.CellSpec, model, tokenizer, importance) -> dict:
-    """Zero the discard set at `sparsity` (LLM-Pruner), eval accRet + PPL.
+    """Remove the discard set at `sparsity` with LLM-Pruner, eval accRet + PPL.
+
+    This removes 30% of every layer, in whole KV-head groups and single MLP
+    channels. The paper instead zeroes whole heads and MLP blocks ranked on one
+    global list (section 4a above, the default).
 
     accRet = acc_pruned / acc_base; base is measured once per (model, task, seed)
     and cached by the caller. Returns {accRet_raw acc, ppl}. Mirrors the
@@ -330,8 +421,19 @@ def eval_task_accuracy(model, tokenizer, task: str, limit: Optional[int] = None)
                "winogrande": CFG.WINOGRANDE_FEWSHOT}.get(task, 0)
     lm = HFLM(pretrained=model, tokenizer=tokenizer, batch_size=CFG.LM_EVAL_BATCH)
     kwargs = dict(model=lm, tasks=[task], num_fewshot=fewshot, limit=limit)
-    if "confirm_run_unsafe_code" in inspect.signature(simple_evaluate).parameters:
+    params = inspect.signature(simple_evaluate).parameters
+    if "confirm_run_unsafe_code" in params:
         kwargs["confirm_run_unsafe_code"] = True
+    # The grid scored instruction-tuned models inside their chat template.
+    use_chat = CFG.APPLY_CHAT_TEMPLATE
+    if use_chat == "auto":
+        use_chat = getattr(tokenizer, "chat_template", None) is not None
+    if "apply_chat_template" in params:
+        kwargs["apply_chat_template"] = bool(use_chat)
+    elif use_chat:
+        import warnings
+        warnings.warn("installed lm-eval cannot apply the chat template; "
+                      "accuracies will not match the paper's protocol")
     out = simple_evaluate(**kwargs)
     res = out["results"][task]
     for k in ("acc,none", "acc", "acc_norm,none"):

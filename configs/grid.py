@@ -85,6 +85,27 @@ SPARSITY_SWEEP: tuple[float, ...] = (0.20, 0.30, 0.40, 0.50)  # robustness (App.
 # patchF scores the top-30% circuit at every pruning budget (paper Section 3
 # and Appendix C), not the top-(1 - sparsity) set the pruner keeps.
 PATCHF_CIRCUIT_FRAC = 0.30
+
+# How the discard set is removed for accRet.
+#   "zero"       (default) the paper's intervention: rank every attention head
+#                and MLP block on one global list and zero the bottom
+#                round(N * sparsity) in an exported checkpoint (210 of 700
+#                components on Llama, 92 of 306 on Gemma at 30%).
+#   "llm-pruner" structural removal with LLM-Pruner at 30% of every layer,
+#                in whole KV-head groups and single MLP channels. Not the
+#                paper's headline protocol; closer to Appendix G's per-layer
+#                variant.
+PRUNERS: tuple[str, ...] = ("zero", "llm-pruner")
+DEFAULT_PRUNER = "zero"
+
+# Node-level selector scoring for the zeroing path, as the paper's grid ran it
+# (circuitkit.selection.get_selector on a HookedTransformer).
+SELECTOR_CFG = dict(batch_size=2, num_examples=128, ig_steps=5,
+                    discovery_data_partition="discovery")
+# TransformerLens's from_pretrained defaults, which the grid's models used.
+TL_WEIGHT_PROCESSING = dict(fold_ln=True, center_writing_weights=True,
+                            center_unembed=True, fold_value_biases=True)
+
 SCOPE = "both"                # attention heads + MLP channels
 HEAD_AGGREGATION = "mean"     # Q-heads -> KV-heads for GQA
 
@@ -109,6 +130,9 @@ LM_EVAL_BATCH = 8
 BOOLQ_FEWSHOT = 0             # BoolQ: lm-eval defaults, full validation
 SST2_FEWSHOT = 0
 WINOGRANDE_FEWSHOT = 0
+# The grid wrapped lm-eval prompts in the model's chat template ("auto": iff
+# the tokenizer ships one, as for both instruction-tuned models here).
+APPLY_CHAT_TEMPLATE = "auto"
 PPL_DATASET = "wikitext-2-raw-v1"   # coherence / confound measurement
 
 # ---------------------------------------------------------------------------

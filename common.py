@@ -53,14 +53,17 @@ def set_seed(seed: int) -> None:
 # ---------------------------------------------------------------------------
 # Model loading / freeing
 # ---------------------------------------------------------------------------
-def load_hf_model(model_id: str, precision: str = "bfloat16", device: str = "cuda"):
-    """Fresh HF causal-LM + tokenizer. Call once per cell; pruning is in-place."""
+def load_hf_model(model_id: str, precision: str = "bfloat16", device: str = "cuda",
+                  tokenizer_id: str = None):
+    """Fresh HF causal-LM + tokenizer. Call once per cell; pruning is in-place.
+    `model_id` may be a local checkpoint directory; pass `tokenizer_id` (the
+    Hub id) when that directory has no tokenizer files."""
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     dtype = {"bfloat16": torch.bfloat16, "float16": torch.float16,
              "float32": torch.float32}[precision]
-    tok = AutoTokenizer.from_pretrained(model_id)
+    tok = AutoTokenizer.from_pretrained(tokenizer_id or model_id)
     if tok.pad_token_id is None:
         tok.pad_token_id = tok.eos_token_id or 0
     model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=dtype).to(device)

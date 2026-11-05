@@ -49,15 +49,34 @@ Table and figure numbers follow the camera-ready version of the paper.
 | Table 2 (selector list and scoring rules; static) | `configs/grid.py`: `ALL_SELECTORS`, `SELECTOR_FAMILY` |
 | Table 4 (leave-one-family-out) | `analysis/analyze.py` (no rerun) |
 | Coherence confound (partial ρ given log PPL) | `analysis/analyze.py` (no rerun) |
-| Appendix C, Table 7 (50% budget) | `drivers/run_grid.py --cells llama:boolq --seeds 42 --sparsities 0.50` |
+| Appendix C, Table 7 (50% budget; rows go to `results/sparsity_0.50/`) | `drivers/run_grid.py --cells llama:boolq --seeds 42 --sparsities 0.50` |
 | §4.3, Figure 4, Table 9 (cross-swap) | `drivers/run_crossswap.py --seeds 42` |
 | §4.2, Tables 8 and 17 (LoRA healing, quantization) | `drivers/run_interventions.py --which {quantization,lora-heal}` |
 | Multi-seed replication of the two significant cells (future work; see "Seeds" below) | `drivers/run_grid.py --cells llama:boolq llama:sst2 --seeds 42 123 456` |
 | Everything at once | `bash run_all.sh` |
 
-patchF always scores the top-30% circuit (`configs/grid.py`:
-`PATCHF_CIRCUIT_FRAC`), whatever the pruning budget, as in the paper; accRet
-prunes the bottom `--sparsities` share of components.
+### Protocol
+
+- **patchF** scores the top-30% circuit (`configs/grid.py`:
+  `PATCHF_CIRCUIT_FRAC`) at every pruning budget, as in the paper.
+- **accRet** uses the paper's intervention by default (`--pruner zero`). Each
+  selector scores every attention head and MLP block
+  (`circuitkit.selection.get_selector`), the components are ranked on one
+  global list, and the bottom `round(N × sparsity)` are zeroed in an exported
+  checkpoint (`circuitkit.evaluation.hf_checkpoint.save_pruned_checkpoint`):
+  210 of 700 components on Llama and 92 of 306 on Gemma at 30%. Accuracy is
+  lm-eval on that checkpoint, with the chat template, on the full validation
+  split. Each run saves its scores and discard set to `results/scores/`.
+- `--pruner llm-pruner` is an alternative that removes 30% of every layer with
+  LLM-Pruner, in whole KV-head groups and single MLP channels. It is not the
+  paper's protocol (it is closer to the per-layer variant of Appendix G), and
+  its rows go to `results/llm_pruner/` so they never mix with the paper's.
+- The OBS row (Llama·BoolQ only) and the quantization and LoRA-healing runs
+  (`drivers/run_interventions.py`, which call CircuitKIT's own example
+  scripts) use LLM-Pruner.
+- Rediscovering the selectors does not return the grid's exact discard sets
+  for five of the ten selectors (Appendix O), so fresh runs reproduce the
+  protocol and the qualitative pattern, not every digit of Table 1.
 
 Every driver appends to `results/master_seed{SEED}.csv`, and
 `analysis/analyze.py` turns those files into the paper's tables. Nothing is
@@ -83,7 +102,8 @@ pip install "circuitkit[benchmarks,gpu-cu126]" --extra-index-url https://downloa
 # 2. This package's one extra dependency.
 pip install "peft>=0.12"
 
-# 3. The structural pruner (public, not on PyPI).
+# 3. The structural pruner (public, not on PyPI). Needed only for
+#    --pruner llm-pruner, the OBS row, and run_interventions.py.
 git clone https://github.com/horseee/LLM-Pruner
 export LLM_PRUNER_PATH=$PWD/LLM-Pruner
 
@@ -106,7 +126,7 @@ the system environment.
 ## Reproduce
 
 ```bash
-export LLM_PRUNER_PATH=/path/to/LLM-Pruner
+export LLM_PRUNER_PATH=/path/to/LLM-Pruner    # for steps that use LLM-Pruner
 bash run_all.sh                              # full grid, about 1 to 2 GPU-days
 # or one slice:
 python drivers/run_grid.py --cells llama:boolq --selectors eap-ig --seeds 42
@@ -147,7 +167,9 @@ is an independent draw.
 Peak memory stays flat because every cell reloads a fresh model and frees it
 (`common.free`). If you run out of memory, lower `configs.grid.BATCH_SIZE`,
 keep IBCircuit at `IB_BATCH_SIZE=1`, or set
-`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`. Discovery and
+`PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`. The zeroing path writes one
+pruned checkpoint at a time (about 7 to 9 GB) under `results/checkpoints/` and
+deletes it after scoring unless you pass `--keep-checkpoints`. Discovery and
 prune/evaluate save scores to disk between phases, so you can run them as
 separate processes.
 
@@ -159,7 +181,7 @@ separate processes.
 configs/grid.py         all experiment settings (models, tasks, selectors, seeds, budgets)
 common.py               seeds, OOM-safe model loading, WikiText PPL, master-CSV writer
 drivers/
-  lib.py                scoring, top-30% circuit faithfulness, GQA-aware pruning, accRet
+  lib.py                scoring, top-30% circuit faithfulness, zeroing and LLM-Pruner paths, accRet
   run_grid.py           patchF vs. accRet grid (Tables 1, 3, 5, and 6)
   run_crossswap.py      component-level cross-swap test (§4.3)
   run_interventions.py  quantization and LoRA healing (§4.2)
