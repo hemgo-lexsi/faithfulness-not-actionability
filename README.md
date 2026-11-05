@@ -1,14 +1,3 @@
-<!--
-TODO(release): three decisions are open before this repository goes public.
-1. drivers/lib.py scores patchF on the top-(1 - sparsity) keep set; the paper
-   scores the top-30% circuit. Change the default to match the paper.
-2. drivers/lib.py prunes with LLM-Pruner; the paper's grid zeroes heads and
-   MLP blocks in exported checkpoints. Add that path, or document the difference.
-3. The paper promises per-run score files and the authored SST-2 pairs; neither
-   ships here yet. Add them, or trim the paper's code sentence.
-Remove this comment once all three are settled.
--->
-
 # Faithfulness Is Not Actionability: reproduction package
 
 Code and data for **"Faithfulness Is Not Actionability: Extrinsic Validation
