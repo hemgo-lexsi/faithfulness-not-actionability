@@ -9,7 +9,11 @@ One cell = one (model, task, selector, seed, sparsity). For every selector we:
          estimators evaluated on the same clean data
   2. Take the top-30% of components as "the circuit"
      (CFG.PATCHF_CIRCUIT_FRAC), whatever the pruning budget.
-  3. patchF / ablF  = faithfulness of that circuit (run_full_faithfulness).
+  3. patchF         = faithfulness of that circuit. On the zeroing path it is
+                      computed node-level from the same scores
+                      (node_patchf, the paper's protocol); on the LLM-Pruner
+                      path it comes from neuron-level discover_circuit
+                      artifacts, with ablF (circuit_faithfulness).
   4. accRet         = lm-eval accuracy after removing the discard set / base
                       accuracy. Two pruners (CFG.PRUNERS):
        - "zero" (default, the paper's protocol): node-level scores from
@@ -253,6 +257,25 @@ def circuit_faithfulness(spec: CFG.CellSpec, cfg: dict, artifact: str = None,
 # ---------------------------------------------------------------------------
 # 4a. Zeroing prune + accRet (default, --pruner zero): the paper's protocol
 # ---------------------------------------------------------------------------
+def task_spec(name: str):
+    """The registered CircuitKIT task, with a clear error for tasks the public
+    package does not ship (the paper's authored SST-2 contrastive pairs)."""
+    from circuitkit.tasks.bootstrap import _bootstrap_builtin_tasks
+    from circuitkit.tasks.registry import get_task
+    try:
+        return get_task(name)
+    except Exception:             # the registry starts empty
+        _bootstrap_builtin_tasks()
+    try:
+        return get_task(name)
+    except Exception as e:
+        raise NotImplementedError(
+            f"task {name!r} is not registered in the installed circuitkit. The "
+            "Llama-SST-2 cell uses the paper's authored label-flipping "
+            "contrastive pairs, whose task module is not in public CircuitKIT "
+            "yet (see README, Protocol).") from e
+
+
 def node_scores(spec: CFG.CellSpec):
     """Signed score for every attention head ("A{l}.{h}") and MLP block
     ("MLP {l}"), computed as the paper's grid did:
@@ -269,6 +292,7 @@ def node_scores(spec: CFG.CellSpec):
             "run it with --pruner llm-pruner")
     import circuitkit as ck
     from circuitkit.selection import get_selector   # registers all ten selectors
+    task_spec(spec.task)                            # fail before loading a model
     common.set_seed(spec.seed)
     model = ck.load_model(spec.model_id, dtype=CFG.PRECISION, device="cuda",
                           **CFG.TL_WEIGHT_PROCESSING)
@@ -321,16 +345,65 @@ def eval_checkpoint(spec: CFG.CellSpec, path: str, keep: bool = False,
     return {"acc_pruned": acc, "ppl": ppl}
 
 
-def faithfulness_handle(spec: CFG.CellSpec, disco_dir: str):
-    """(cfg, artifact) for circuit_faithfulness without building an LLM-Pruner
-    importance. artifact is None for magnitude/taylor/wanda/multi_granular/
-    random, whose patchF ships in results/reference (see scores_for_selector).
+def node_patchf(spec: CFG.CellSpec, tl_model, scores: dict) -> float:
+    """The paper's patchF, from the same node-level scores and model that
+    node_scores() returns.
+
+    The circuit is the top PATCHF_CIRCUIT_FRAC of the node-level graph's
+    forward slots by |score| (the input node is always kept), evaluated with
+    activation patching on 300 held-out pairs drawn with seed + 1000 from the
+    task's eval partition:
+        patchF = (y_patch - y_corrupt) / (y_clean - y_corrupt),
+    with y the task metric. This is the camera-ready audit's port of the
+    grid's code, which reproduced the grid's clean and corrupt baselines
+    (Appendix O). Returns NaN when the clean-corrupt gap is degenerate.
     """
-    cfg, artifact = build_config(spec, disco_dir)
-    if spec.selector in CFG.CIRCUIT_SELECTORS or spec.selector == "obs":
-        discover_scores(spec, disco_dir)
-        return cfg, artifact
-    return cfg, None
+    import torch
+    from circuitkit.backends.eap.graph import AttentionNode, Graph, MLPNode
+    from circuitkit.evaluation.evaluate import evaluate_baseline, evaluate_graph
+    task = task_spec(spec.task)
+
+    device = next(tl_model.parameters()).device
+    dataloader = task.build_dataloader(tl_model, {
+        "algorithm": "eap", "task": spec.task, "level": "node",
+        "batch_size": CFG.PATCHF_BATCH_SIZE, "model_name": spec.model_id,
+        "data_params": {"num_examples": CFG.PATCHF_EXAMPLES,
+                        "seed": spec.seed + CFG.PATCHF_EVAL_SEED_OFFSET,
+                        "data_partition": "eval"},
+    }, device)
+    task_metric = task.metric_fn()
+
+    def y(logits, clean_logits, input_lengths, labels):
+        return -task_metric(logits, clean_logits, input_lengths, labels)
+
+    graph = Graph.from_model(tl_model, node_scores=True, neuron_level=False,
+                             mlp_hook="mlp_out")
+    for node in graph.nodes.values():
+        if isinstance(node, AttentionNode):
+            name = f"A{node.layer}.{node.head}"
+        elif isinstance(node, MLPNode):
+            name = f"MLP {node.layer}"
+        else:
+            continue
+        graph.nodes_scores[graph.forward_index(node, attn_slice=False)] = \
+            abs(scores.get(name, 0.0))
+    graph.apply_topn(max(1, int(graph.n_forward * CFG.PATCHF_CIRCUIT_FRAC)),
+                     level="node", absolute=True, reset=True)
+
+    def mean(res):
+        res = res[0] if isinstance(res, list) else res
+        res = res.detach().float().cpu()
+        return float(res.item()) if res.ndim == 0 else float(res.mean().item())
+
+    with torch.inference_mode():
+        y_clean = mean(evaluate_baseline(tl_model, dataloader, [y],
+                                         run_corrupted=False, quiet=True))
+        y_corrupt = mean(evaluate_baseline(tl_model, dataloader, [y],
+                                           run_corrupted=True, quiet=True))
+    y_patch = mean(evaluate_graph(tl_model, graph, dataloader, [y],
+                                  intervention="patching", quiet=True))
+    gap = y_clean - y_corrupt
+    return float("nan") if abs(gap) <= 1e-8 else (y_patch - y_corrupt) / gap
 
 
 # ---------------------------------------------------------------------------

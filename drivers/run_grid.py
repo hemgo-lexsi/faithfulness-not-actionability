@@ -101,21 +101,16 @@ def run_cell_zero(spec: CFG.CellSpec, out_dir: str, disco_dir: str, base_cache: 
     """One selector on one cell with the paper's zeroing protocol."""
     base_acc = _base_accuracy(spec, base_cache)
 
-    # faithfulness of the top-30% circuit (patchF/ablF). NaN only for
-    # magnitude/taylor/wanda/multi_granular/random, whose patchF ships in
-    # results/reference (see lib.scores_for_selector).
-    cfg, artifact = lib.faithfulness_handle(spec, disco_dir)
-    if artifact:
-        faith = lib.circuit_faithfulness(spec, cfg, artifact=artifact)
-    else:
-        faith = {"patchF": float("nan"), "ablF": float("nan")}
-
-    # node-level scores -> global bottom-k discard set -> zeroed checkpoint
+    # node-level scores -> patchF of the top-30% circuit (every selector),
+    # then the global bottom-k discard set -> zeroed checkpoint. ablF is not
+    # recomputed on this path; the paper's values ship in results/reference.
     scores, tl_model = lib.node_scores(spec)
+    faith = {"patchF": lib.node_patchf(spec, tl_model, scores), "ablF": float("nan")}
     discard = lib.discard_set(scores, spec.sparsity)
     common.save_json({"selector": spec.selector, "model": spec.model_id,
                       "task": spec.task, "seed": spec.seed,
                       "sparsity": spec.sparsity, "pruner": "zero",
+                      "patchF": faith["patchF"],
                       "scores": scores, "discard": discard},
                      os.path.join(out_dir, "scores", spec.tag() + ".json"))
     ckpt = lib.export_zeroed(spec, tl_model, discard,

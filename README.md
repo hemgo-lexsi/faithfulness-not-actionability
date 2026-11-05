@@ -58,7 +58,13 @@ Table and figure numbers follow the camera-ready version of the paper.
 ### Protocol
 
 - **patchF** scores the top-30% circuit (`configs/grid.py`:
-  `PATCHF_CIRCUIT_FRAC`) at every pruning budget, as in the paper.
+  `PATCHF_CIRCUIT_FRAC`) at every pruning budget, as in the paper. On the
+  default path it uses the same node-level scores as the prune: the top 30%
+  of heads and MLP blocks by |score|, activation patching, and 300 held-out
+  pairs drawn with seed + 1000, so every selector gets a patchF. ablF is not
+  recomputed there (the paper's values ship in `results/reference/`). The
+  LLM-Pruner path keeps the older neuron-level `discover_circuit` route,
+  which gives patchF and ablF for the five circuit selectors only.
 - **accRet** uses the paper's intervention by default (`--pruner zero`). Each
   selector scores every attention head and MLP block
   (`circuitkit.selection.get_selector`), the components are ranked on one
@@ -74,6 +80,9 @@ Table and figure numbers follow the camera-ready version of the paper.
 - The OBS row (Llama·BoolQ only) and the quantization and LoRA-healing runs
   (`drivers/run_interventions.py`, which call CircuitKIT's own example
   scripts) use LLM-Pruner.
+- **Llama·SST-2** uses authored, label-flipping contrastive pairs. Their task
+  module is not in public CircuitKIT yet, so the SST-2 cells stop with a clear
+  error before loading a model. The other four cells run as described.
 - Rediscovering the selectors does not return the grid's exact discard sets
   for five of the ten selectors (Appendix O), so fresh runs reproduce the
   protocol and the qualitative pattern, not every digit of Table 1.
@@ -158,8 +167,8 @@ is an independent draw.
 
 | Stage | Runs | Approximate time |
 |---|---|---|
-| Discovery (5 circuit selectors × 5 cells, seed 42) | 25 | 3 to 5 h (IBCircuit and EAP-IG dominate) |
-| Prune, accRet, and PPL (10 selectors × 5 cells) | 50 | 6 to 9 h |
+| Node-level scoring and patchF (10 selectors × 5 cells, seed 42) | 50 | about 40 min per cell for scoring (camera-ready audit, Llama·BoolQ), plus patchF |
+| Export, accRet, and PPL (10 selectors × 5 cells) | 50 | 6 to 9 h |
 | **Multi-seed BoolQ and SST-2 at seeds 123 and 456** | 40 | **about 15 to 25 GPU-h** |
 | Cross-swap (3 pairs × 3 conditions) | 9 | 1 to 2 h |
 | Quantization and LoRA healing | n/a | 2 to 4 h |

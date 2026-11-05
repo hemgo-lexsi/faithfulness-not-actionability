@@ -114,6 +114,8 @@ HEAD_AGGREGATION = "mean"     # Q-heads -> KV-heads for GQA
 # ---------------------------------------------------------------------------
 DISCOVERY_EXAMPLES = 128      # disjoint from evaluation
 PATCHF_EXAMPLES = 300         # held-out partition for faithfulness
+PATCHF_EVAL_SEED_OFFSET = 1000  # eval draw seed = discovery seed + 1000 (grid)
+PATCHF_BATCH_SIZE = 2
 LEVEL = "neuron"              # whole attention heads + per-neuron MLP channels
 MLP_HOOK = "post_act"         # required for d_mlp -> gate_proj column mapping
 IG_STEPS = 5
